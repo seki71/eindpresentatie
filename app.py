@@ -623,13 +623,96 @@ st.write(" | ".join(active_filters))
 # =========================================================
 # TABS
 # =========================================================
-tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Maps", "Infrastructure", "Data"])
+tab1, tab2 = st.tabs(["Dashboard", "Data"])
 
 
 # =========================================================
-# TAB 1 - OVERVIEW
+# TAB 1 - DASHBOARD
 # =========================================================
 with tab1:
+    # -----------------------------
+    # EERST DE KAARTEN
+    # -----------------------------
+    map_col1, map_col2 = st.columns(2)
+
+    with map_col1:
+        st.subheader("Laaddruk per ZIP in Washington")
+
+        map_ev = zip_table.dropna(subset=["lat", "lon"]).copy()
+        if len(map_ev) > map_limit:
+            map_ev = map_ev.head(map_limit)
+
+        if not map_ev.empty:
+            fig_ev_map = px.scatter_map(
+                map_ev,
+                lat="lat",
+                lon="lon",
+                size="ev_count",
+                color="pressure_score",
+                hover_name="zip_label",
+                hover_data={
+                    "county": True,
+                    "city": True,
+                    "ev_count": True,
+                    "station_count": True,
+                    "port_count": True,
+                    "lat": False,
+                    "lon": False,
+                },
+                center={"lat": WA_CENTER_LAT, "lon": WA_CENTER_LON},
+                zoom=6,
+                height=600,
+            )
+            fig_ev_map.update_layout(
+                template="plotly_white",
+                margin=dict(l=0, r=0, t=30, b=0),
+            )
+            st.plotly_chart(fig_ev_map, use_container_width=True)
+        else:
+            st.info("Geen kaartdata beschikbaar voor ZIP-druk in Washington.")
+
+    with map_col2:
+        st.subheader("Charging stations in Washington")
+
+        map_chg = charging_filtered.dropna(subset=["latitude", "longitude"]).copy()
+        if len(map_chg) > map_limit:
+            map_chg = map_chg.sample(map_limit, random_state=42)
+
+        if not map_chg.empty:
+            fig_chg_map = px.scatter_map(
+                map_chg,
+                lat="latitude",
+                lon="longitude",
+                size="port_count",
+                color="station_type",
+                hover_name="station_name",
+                hover_data={
+                    "city": True,
+                    "zip": True,
+                    "ev_network": True,
+                    "port_count": True,
+                    "l2_ports": True,
+                    "dc_fast_ports": True,
+                    "latitude": False,
+                    "longitude": False,
+                },
+                center={"lat": WA_CENTER_LAT, "lon": WA_CENTER_LON},
+                zoom=6,
+                height=600,
+            )
+            fig_chg_map.update_layout(
+                template="plotly_white",
+                margin=dict(l=0, r=0, t=30, b=0),
+            )
+            st.plotly_chart(fig_chg_map, use_container_width=True)
+        else:
+            st.info("Geen kaartdata beschikbaar voor charging stations.")
+
+    st.markdown("---")
+
+    # -----------------------------
+    # DAARONDER DE OVERVIEW-GRAFIEKEN
+    # -----------------------------
     row1_col1, row1_col2 = st.columns(2)
 
     with row1_col1:
@@ -674,53 +757,34 @@ with tab1:
 
     with row2_col1:
         if not county_ev_table.empty:
-            fig_county = px.bar(
-                county_ev_table.head(top_n).sort_values("ev_count", ascending=True),
-                x="ev_count",
-                y="county",
-                orientation="h",
-                title="Top counties op EV-volume",
-                labels={"ev_count": "Aantal EV's", "county": ""},
-                template="plotly_white",
+            treemap_df = county_ev_table.head(top_n).copy()
+
+            fig_county = px.treemap(
+                treemap_df,
+                path=["county"],
+                values="ev_count",
+                color="ev_count",
+                title="Aandeel EV's per county",
+                color_continuous_scale="Blues",
             )
-            fig_county.update_layout(height=420)
+            fig_county.update_layout(height=420, margin=dict(l=0, r=0, t=50, b=0))
             st.plotly_chart(fig_county, use_container_width=True)
 
     with row2_col2:
         if not zip_table.empty:
-            top_zip_pressure = zip_table.head(top_n).sort_values("pressure_score", ascending=True)
+            zip_scatter_df = zip_table.dropna(subset=["ev_count", "port_count"]).copy()
+            zip_scatter_df = zip_scatter_df[
+                (zip_scatter_df["ev_count"] > 0) | (zip_scatter_df["port_count"] > 0)
+            ].copy()
 
-            fig_zip_pressure = px.bar(
-                top_zip_pressure,
-                x="pressure_score",
-                y="zip_label",
-                orientation="h",
-                title="ZIP-codes met hoogste laaddruk",
-                labels={"pressure_score": "Drukscore", "zip_label": ""},
-                template="plotly_white",
-            )
-            fig_zip_pressure.update_layout(height=420)
-            st.plotly_chart(fig_zip_pressure, use_container_width=True)
+            if len(zip_scatter_df) > 250:
+                zip_scatter_df = zip_scatter_df.head(250)
 
-# =========================================================
-# TAB 2 - MAPS
-# =========================================================
-with tab2:
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Laaddruk per ZIP in Washington")
-
-        map_ev = zip_table.dropna(subset=["lat", "lon"]).copy()
-        if len(map_ev) > map_limit:
-            map_ev = map_ev.head(map_limit)
-
-        if not map_ev.empty:
-            fig_ev_map = px.scatter_map(
-                map_ev,
-                lat="lat",
-                lon="lon",
-                size="ev_count",
+            fig_zip_gap = px.scatter(
+                zip_scatter_df,
+                x="port_count",
+                y="ev_count",
+                size="pressure_score",
                 color="pressure_score",
                 hover_name="zip_label",
                 hover_data={
@@ -729,97 +793,24 @@ with tab2:
                     "ev_count": True,
                     "station_count": True,
                     "port_count": True,
-                    "lat": False,
-                    "lon": False,
+                    "pressure_score": ":.2f",
                 },
-                center={"lat": WA_CENTER_LAT, "lon": WA_CENTER_LON},
-                zoom=6,
-                height=600,
-            )
-            fig_ev_map.update_layout(template="plotly_white", margin=dict(l=0, r=0, t=30, b=0))
-            st.plotly_chart(fig_ev_map, use_container_width=True)
-        else:
-            st.info("Geen kaartdata beschikbaar voor ZIP-druk in Washington.")
-
-    with col2:
-        st.subheader("Charging stations in Washington")
-
-        map_chg = charging_filtered.dropna(subset=["latitude", "longitude"]).copy()
-        if len(map_chg) > map_limit:
-            map_chg = map_chg.sample(map_limit, random_state=42)
-
-        if not map_chg.empty:
-            fig_chg_map = px.scatter_map(
-                map_chg,
-                lat="latitude",
-                lon="longitude",
-                size="port_count",
-                color="station_type",
-                hover_name="station_name",
-                hover_data={
-                    "city": True,
-                    "zip": True,
-                    "ev_network": True,
-                    "port_count": True,
-                    "l2_ports": True,
-                    "dc_fast_ports": True,
-                    "latitude": False,
-                    "longitude": False,
+                title="Infrastructure gap per ZIP-code",
+                labels={
+                    "port_count": port_label,
+                    "ev_count": "Aantal EV's",
+                    "pressure_score": "Drukscore",
                 },
-                center={"lat": WA_CENTER_LAT, "lon": WA_CENTER_LON},
-                zoom=6,
-                height=600,
-            )
-            fig_chg_map.update_layout(template="plotly_white", margin=dict(l=0, r=0, t=30, b=0))
-            st.plotly_chart(fig_chg_map, use_container_width=True)
-        else:
-            st.info("Geen kaartdata beschikbaar voor charging stations.")
-
-
-# =========================================================
-# TAB 3 - INFRASTRUCTURE
-# =========================================================
-with tab3:
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if not zip_table.empty:
-            scatter_df = zip_table.dropna(subset=["ev_count", "port_count"]).copy().head(1000)
-
-            fig_scatter = px.scatter(
-                scatter_df,
-                x="port_count",
-                y="ev_count",
-                size="ev_count",
-                color="pressure_score",
-                hover_name="zip_label",
-                title="Vraag versus aanbod per ZIP-code",
-                labels={"port_count": port_label, "ev_count": "EV's"},
                 template="plotly_white",
             )
-            fig_scatter.update_layout(height=500)
-            st.plotly_chart(fig_scatter, use_container_width=True)
+            fig_zip_gap.update_layout(height=420)
+            st.plotly_chart(fig_zip_gap, use_container_width=True)
 
-    with col2:
-        if not zip_table.empty:
-            top_zips = zip_table.sort_values("pressure_score", ascending=False).head(top_n)
-
-            fig_zips = px.bar(
-                top_zips.sort_values("pressure_score", ascending=True),
-                x="pressure_score",
-                y="zip_label",
-                orientation="h",
-                title="ZIP-codes met hoogste laaddruk",
-                labels={"pressure_score": "Drukscore", "zip_label": ""},
-                template="plotly_white",
-            )
-            fig_zips.update_layout(height=500)
-            st.plotly_chart(fig_zips, use_container_width=True)
 
 # =========================================================
-# TAB 4 - DATA
+# TAB 2 - DATA
 # =========================================================
-with tab4:
+with tab2:
     dataset_choice = st.radio(
         "Dataset",
         ["County EV summary", "ZIP gap", "Charging stations", "EV records"],
