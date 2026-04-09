@@ -434,6 +434,7 @@ def filter_charging_data(
     search_term: str,
     fast_only: bool,
     recent_mode: str,
+    counties: list[str],
 ) -> pd.DataFrame:
     out = df.copy()
 
@@ -459,13 +460,16 @@ def filter_charging_data(
         cutoff_year = int(recent_mode)
         out = out[out["open_date"].dt.year >= cutoff_year]
 
+    if counties and "county" in out.columns:
+        out = out[out["county"].isin(counties)]
+
     if zip_search and "zip" in out.columns:
         out = out[out["zip"].astype("string").str.contains(zip_search, na=False)]
 
     if search_term:
         s = search_term.strip().lower()
         masks = []
-        for col in ["city", "zip", "station_name", "street_address", "ev_network"]:
+        for col in ["county", "city", "zip", "station_name", "street_address", "ev_network"]:
             if col in out.columns:
                 masks.append(out[col].astype("string").str.lower().str.contains(s, na=False))
         if masks:
@@ -724,16 +728,18 @@ ev_filtered = filter_ev_data(
     search_term=search_term,
 )
 
+charging_with_county = infer_county_from_zip(charging_raw, ev_raw)
+
 charging_filtered = filter_charging_data(
-    charging_raw,
+    charging_with_county,
     access_scope=access_scope,
     port_mode=port_mode,
     zip_search=zip_search,
     search_term=search_term,
     fast_only=fast_only,
     recent_mode=recent_mode,
+    counties=selected_counties,
 )
-charging_filtered = infer_county_from_zip(charging_filtered, ev_raw)
 
 history_filtered = filter_history_data(
     history_raw,
