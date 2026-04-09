@@ -14,20 +14,19 @@ st.set_page_config(page_title="Washington EV Dashboard", page_icon="⚡", layout
 
 EV_FILE = Path("Electric_Vehicle_Population_Data.csv")
 CHARGING_FILE = Path("EV_Charging_Stations_Feb82024.xlsx")
+HISTORY_FILE = Path("Electric_Vehicle_Population_Size_History_By_County.csv")
 
 FOCUS_STATE = "WA"
 WA_CENTER_LAT = 47.4
 WA_CENTER_LON = -120.7
 
 US_STATE_CODES = {
-    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
-    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
-    "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
-    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
-    "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
-    "DC",
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID",
+    "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS",
+    "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK",
+    "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV",
+    "WI", "WY", "DC",
 }
-
 
 # =========================================================
 # HELPERS
@@ -43,7 +42,6 @@ def normalize_column_name(name: str) -> str:
 def clean_text(series: pd.Series, mode: str = "plain") -> pd.Series:
     s = series.astype("string").str.strip()
     s = s.replace({"": pd.NA, "nan": pd.NA, "None": pd.NA})
-
     if mode == "title":
         return s.str.title()
     if mode == "upper":
@@ -110,8 +108,7 @@ def load_ev_data() -> pd.DataFrame:
     df.columns = [normalize_column_name(c) for c in df.columns]
 
     keep_cols = [
-        c
-        for c in [
+        c for c in [
             "postal_code",
             "county",
             "city",
@@ -123,8 +120,7 @@ def load_ev_data() -> pd.DataFrame:
             "electric_range",
             "base_msrp",
             "vehicle_location",
-        ]
-        if c in df.columns
+        ] if c in df.columns
     ]
     df = df[keep_cols].copy()
 
@@ -187,7 +183,6 @@ def load_charging_data() -> pd.DataFrame:
 
     xls = pd.ExcelFile(CHARGING_FILE)
     preferred_sheet = "Raw" if "Raw" in xls.sheet_names else xls.sheet_names[0]
-
     df = pd.read_excel(CHARGING_FILE, sheet_name=preferred_sheet)
     df.columns = [normalize_column_name(c) for c in df.columns]
 
@@ -216,8 +211,7 @@ def load_charging_data() -> pd.DataFrame:
     df = df.rename(columns={c: rename_map[c] for c in df.columns if c in rename_map})
 
     keep_cols = [
-        c
-        for c in [
+        c for c in [
             "station_id",
             "station_name",
             "ev_network",
@@ -236,8 +230,7 @@ def load_charging_data() -> pd.DataFrame:
             "restricted_access",
             "facility_type",
             "street_address",
-        ]
-        if c in df.columns
+        ] if c in df.columns
     ]
     df = df[keep_cols].copy()
 
@@ -309,6 +302,87 @@ def load_charging_data() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+@st.cache_data(show_spinner=False)
+def load_history_data() -> pd.DataFrame:
+    if not HISTORY_FILE.exists():
+        return pd.DataFrame()
+
+    df = pd.read_csv(HISTORY_FILE)
+    df.columns = [normalize_column_name(c) for c in df.columns]
+
+    rename_map = {
+        "date": "date",
+        "county": "county",
+        "state": "state",
+        "vehicle_primary_use": "vehicle_primary_use",
+        "battery_electric_vehicles_bevs": "bevs",
+        "plug_in_hybrid_electric_vehicles_phevs": "phevs",
+        "electric_vehicle_ev_total": "ev_total",
+        "non_electric_vehicle_total": "non_ev_total",
+        "total_vehicles": "total_vehicles",
+        "percent_electric_vehicles": "percent_ev",
+    }
+    df = df.rename(columns={c: rename_map[c] for c in df.columns if c in rename_map})
+
+    keep_cols = [
+        c for c in [
+            "date",
+            "county",
+            "state",
+            "vehicle_primary_use",
+            "bevs",
+            "phevs",
+            "ev_total",
+            "non_ev_total",
+            "total_vehicles",
+            "percent_ev",
+        ] if c in df.columns
+    ]
+    df = df[keep_cols].copy()
+
+    for col, mode in [
+        ("county", "title"),
+        ("state", "upper"),
+        ("vehicle_primary_use", "plain"),
+    ]:
+        if col in df.columns:
+            df[col] = clean_text(df[col], mode)
+
+    if "state" in df.columns:
+        df["state"] = clean_state_codes(df["state"])
+
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    for col in ["bevs", "phevs", "ev_total", "non_ev_total", "total_vehicles", "percent_ev"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df.reset_index(drop=True)
+
+
+# =========================================================
+# DERIVED HELPERS
+# =========================================================
+def infer_county_from_zip(charging_df: pd.DataFrame, ev_df: pd.DataFrame) -> pd.DataFrame:
+    out = charging_df.copy()
+
+    if "county" in out.columns and out["county"].notna().any():
+        return out
+
+    if "zip" not in out.columns or "postal_code" not in ev_df.columns or "county" not in ev_df.columns:
+        out["county"] = pd.NA
+        return out
+
+    zip_to_county = (
+        ev_df.dropna(subset=["postal_code", "county"])
+        .groupby("postal_code")["county"]
+        .agg(lambda x: x.mode().iloc[0] if not x.mode().empty else pd.NA)
+    )
+    out["county"] = out["zip"].map(zip_to_county)
+    return out
+
+
 # =========================================================
 # FILTERS
 # =========================================================
@@ -340,11 +414,9 @@ def filter_ev_data(
     if search_term:
         s = search_term.strip().lower()
         masks = []
-
         for col in ["county", "city", "postal_code", "make", "model"]:
             if col in out.columns:
                 masks.append(out[col].astype("string").str.lower().str.contains(s, na=False))
-
         if masks:
             combined = masks[0]
             for m in masks[1:]:
@@ -376,7 +448,6 @@ def filter_charging_data(
             out = out[out["access_code"].eq("public")]
         if "restricted_access" in out.columns:
             out = out[~out["restricted_access"].isin(["true", "yes", "1"])]
-
     elif access_scope == "Publiek + beperkt":
         if "access_code" in out.columns:
             out = out[out["access_code"].eq("public")]
@@ -394,11 +465,9 @@ def filter_charging_data(
     if search_term:
         s = search_term.strip().lower()
         masks = []
-
         for col in ["city", "zip", "station_name", "street_address", "ev_network"]:
             if col in out.columns:
                 masks.append(out[col].astype("string").str.lower().str.contains(s, na=False))
-
         if masks:
             combined = masks[0]
             for m in masks[1:]:
@@ -406,6 +475,22 @@ def filter_charging_data(
             out = out[combined]
 
     out["port_count"] = out["total_port_count"] if port_mode == "Alle poorten" else out["usable_port_count"]
+    return out.reset_index(drop=True)
+
+
+def filter_history_data(
+    df: pd.DataFrame,
+    counties: list[str],
+    search_term: str,
+) -> pd.DataFrame:
+    out = df.copy()
+
+    if counties and "county" in out.columns:
+        out = out[out["county"].isin(counties)]
+
+    if search_term and "county" in out.columns:
+        s = search_term.strip().lower()
+        out = out[out["county"].astype("string").str.lower().str.contains(s, na=False)]
 
     return out.reset_index(drop=True)
 
@@ -463,7 +548,6 @@ def prepare_zip_table(ev_df: pd.DataFrame, charging_df: pd.DataFrame) -> pd.Data
     )
 
     merged = ev_zip.merge(chg_zip, on="zip", how="left")
-
     merged = coerce_numeric_columns(
         merged,
         ["ev_count", "station_count", "port_count", "l2_ports", "dc_fast_ports", "lat", "lon"],
@@ -475,7 +559,6 @@ def prepare_zip_table(ev_df: pd.DataFrame, charging_df: pd.DataFrame) -> pd.Data
 
     merged["evs_per_port"] = safe_ratio(merged["ev_count"], merged["port_count"])
     merged["pressure_score"] = merged["ev_count"] / (merged["port_count"] + 1)
-
     merged["evs_per_port"] = pd.to_numeric(merged["evs_per_port"], errors="coerce")
     merged["pressure_score"] = pd.to_numeric(merged["pressure_score"], errors="coerce").fillna(0)
     merged["zip_label"] = merged["zip"].astype("string")
@@ -497,11 +580,80 @@ def prepare_make_table(ev_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def prepare_county_growth_table(history_df: pd.DataFrame, charging_df: pd.DataFrame) -> pd.DataFrame:
+    if history_df.empty or "county" not in history_df.columns or "date" not in history_df.columns:
+        return pd.DataFrame()
+
+    hist = history_df.copy()
+
+    if "vehicle_primary_use" in hist.columns:
+        hist = hist[hist["vehicle_primary_use"].astype("string").str.lower().eq("passenger")].copy()
+
+    hist = hist.dropna(subset=["county", "date", "ev_total"]).copy()
+    if hist.empty:
+        return pd.DataFrame()
+
+    latest_date = hist["date"].max()
+    compare_date = latest_date - pd.DateOffset(years=1)
+
+    latest_df = (
+        hist[hist["date"] == latest_date]
+        .groupby("county", dropna=False)
+        .agg(latest_ev_total=("ev_total", "sum"))
+        .reset_index()
+    )
+
+    baseline_idx = (
+        hist[hist["date"] <= compare_date]
+        .sort_values(["county", "date"])
+        .groupby("county")["date"]
+        .idxmax()
+    )
+
+    baseline_df = (
+        hist.loc[baseline_idx, ["county", "date", "ev_total"]]
+        .rename(columns={"date": "baseline_date", "ev_total": "baseline_ev_total"})
+        .reset_index(drop=True)
+    )
+
+    growth_df = latest_df.merge(baseline_df, on="county", how="left")
+    growth_df["baseline_ev_total"] = pd.to_numeric(growth_df["baseline_ev_total"], errors="coerce").fillna(0)
+    growth_df["latest_ev_total"] = pd.to_numeric(growth_df["latest_ev_total"], errors="coerce").fillna(0)
+    growth_df["ev_growth_abs"] = growth_df["latest_ev_total"] - growth_df["baseline_ev_total"]
+    growth_df["ev_growth_pct"] = safe_ratio(growth_df["ev_growth_abs"], growth_df["baseline_ev_total"]) * 100
+
+    if not charging_df.empty and "county" in charging_df.columns:
+        chg_county = (
+            charging_df.dropna(subset=["county"])
+            .groupby("county", dropna=False)
+            .agg(
+                station_count=("station_id", "nunique"),
+                port_count=("port_count", "sum"),
+                dc_fast_ports=("dc_fast_ports", "sum"),
+            )
+            .reset_index()
+        )
+    else:
+        chg_county = pd.DataFrame(columns=["county", "station_count", "port_count", "dc_fast_ports"])
+
+    growth_df = growth_df.merge(chg_county, on="county", how="left")
+
+    for col in ["station_count", "port_count", "dc_fast_ports"]:
+        if col in growth_df.columns:
+            growth_df[col] = pd.to_numeric(growth_df[col], errors="coerce").fillna(0)
+
+    growth_df["growth_per_port"] = growth_df["ev_growth_abs"] / (growth_df["port_count"] + 1)
+    growth_df["latest_date"] = latest_date
+
+    return growth_df.sort_values("growth_per_port", ascending=False).reset_index(drop=True)
+
+
 # =========================================================
 # DATA
 # =========================================================
 ev_raw = load_ev_data()
 charging_raw = load_charging_data()
+history_raw = load_history_data()
 
 if ev_raw.empty:
     st.error("EV-bestand niet gevonden. Zet Electric_Vehicle_Population_Data.csv naast app.py.")
@@ -517,13 +669,15 @@ if "state" in ev_raw.columns:
 if "state" in charging_raw.columns:
     charging_raw = charging_raw[charging_raw["state"].eq(FOCUS_STATE)].copy()
 
+if "state" in history_raw.columns:
+    history_raw = history_raw[history_raw["state"].eq(FOCUS_STATE)].copy()
+
 county_options = sorted(ev_raw["county"].dropna().unique().tolist()) if "county" in ev_raw.columns else []
 make_options = sorted(ev_raw["make"].dropna().unique().tolist()) if "make" in ev_raw.columns else []
-
 year_values = sorted(ev_raw["model_year"].dropna().astype(int).unique().tolist()) if "model_year" in ev_raw.columns else []
+
 recent_year_choices = ["Alle jaren", "2024", "2022", "2020", "2018", "2015"]
 model_year_choices = ["Alle jaren"] + [str(y) for y in sorted(set(year_values), reverse=True)[:15]]
-
 
 # =========================================================
 # SIDEBAR
@@ -536,13 +690,11 @@ with st.sidebar:
         ["Alle EV's", "Alleen BEV", "Alleen PHEV"],
         index=0,
     )
-
     access_scope = st.radio(
         "Laadtoegang",
         ["Alle stations", "Publiek + beperkt", "Alleen publiek"],
         index=0,
     )
-
     port_mode = st.radio(
         "Poorttelling",
         ["Alle poorten", "Alleen L2 + DC Fast"],
@@ -559,7 +711,6 @@ with st.sidebar:
     search_term = st.text_input("Zoeken", placeholder="bijv. King, Seattle, Tesla, 98101")
     zip_search = st.text_input("Filter charging op ZIP", placeholder="bijv. 981")
     fast_only = st.checkbox("Alleen stations met DC Fast", value=False)
-
 
 # =========================================================
 # APPLY FILTERS
@@ -582,19 +733,26 @@ charging_filtered = filter_charging_data(
     fast_only=fast_only,
     recent_mode=recent_mode,
 )
+charging_filtered = infer_county_from_zip(charging_filtered, ev_raw)
+
+history_filtered = filter_history_data(
+    history_raw,
+    counties=selected_counties,
+    search_term=search_term,
+)
 
 county_ev_table = prepare_county_ev_table(ev_filtered)
 zip_table = prepare_zip_table(ev_filtered, charging_filtered)
 make_table = prepare_make_table(ev_filtered)
+county_growth_table = prepare_county_growth_table(history_filtered, charging_filtered)
 
 port_label = "Poorten" if port_mode == "Alle poorten" else "Poorten (L2+DC)"
-
 
 # =========================================================
 # HEADER
 # =========================================================
 st.title("⚡ Washington EV Dashboard")
-st.caption("Focus op Washington State: EV-populatie, laadstations en infrastructure gap op ZIP-niveau.")
+st.caption("Focus op Washington State: EV-populatie, laadstations en infrastructure gap op ZIP- en county-niveau.")
 
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("EV's", f"{len(ev_filtered):,}")
@@ -602,7 +760,10 @@ k2.metric("Laadlocaties", f"{charging_filtered['station_id'].nunique():,}")
 k3.metric(port_label, f"{int(charging_filtered['port_count'].sum()):,}")
 k4.metric("Counties", f"{ev_filtered['county'].dropna().nunique() if 'county' in ev_filtered.columns else 0:,}")
 
-avg_evs_per_port = pd.to_numeric(zip_table.get("evs_per_port", pd.Series(dtype=float)), errors="coerce").dropna().mean()
+avg_evs_per_port = pd.to_numeric(
+    zip_table.get("evs_per_port", pd.Series(dtype=float)),
+    errors="coerce",
+).dropna().mean()
 k5.metric("Gem. EV's / poort", "-" if pd.isna(avg_evs_per_port) else f"{avg_evs_per_port:,.1f}")
 
 active_filters = [f"Staat: {FOCUS_STATE}"]
@@ -619,26 +780,21 @@ active_filters.append(f"Poorten: {port_mode}")
 
 st.write(" | ".join(active_filters))
 
-
 # =========================================================
 # TABS
 # =========================================================
-tab1, tab2 = st.tabs(["Dashboard", "Data"])
-
+tab1, tab2, tab3 = st.tabs(["Dashboard", "Groei over tijd", "Data"])
 
 # =========================================================
 # TAB 1 - DASHBOARD
 # =========================================================
 with tab1:
-    # -----------------------------
-    # EERST DE KAARTEN
-    # -----------------------------
     map_col1, map_col2 = st.columns(2)
 
     with map_col1:
         st.subheader("Laaddruk per ZIP in Washington")
-
         map_ev = zip_table.dropna(subset=["lat", "lon"]).copy()
+
         if len(map_ev) > map_limit:
             map_ev = map_ev.head(map_limit)
 
@@ -673,8 +829,8 @@ with tab1:
 
     with map_col2:
         st.subheader("Charging stations in Washington")
-
         map_chg = charging_filtered.dropna(subset=["latitude", "longitude"]).copy()
+
         if len(map_chg) > map_limit:
             map_chg = map_chg.sample(map_limit, random_state=42)
 
@@ -710,15 +866,11 @@ with tab1:
 
     st.markdown("---")
 
-    # -----------------------------
-    # DAARONDER DE OVERVIEW-GRAFIEKEN
-    # -----------------------------
     row1_col1, row1_col2 = st.columns(2)
 
     with row1_col1:
         if "model_year" in ev_filtered.columns and ev_filtered["model_year"].notna().any():
             hist_df = ev_filtered.dropna(subset=["model_year"]).copy()
-
             fig_years = px.histogram(
                 hist_df,
                 x="model_year",
@@ -758,7 +910,6 @@ with tab1:
     with row2_col1:
         if not county_ev_table.empty:
             treemap_df = county_ev_table.head(top_n).copy()
-
             fig_county = px.treemap(
                 treemap_df,
                 path=["county"],
@@ -806,30 +957,136 @@ with tab1:
             fig_zip_gap.update_layout(height=420)
             st.plotly_chart(fig_zip_gap, use_container_width=True)
 
-
 # =========================================================
-# TAB 2 - DATA
+# TAB 2 - GROEI OVER TIJD
 # =========================================================
 with tab2:
+    st.subheader("EV-groei versus laadinfrastructuur")
+    g1, g2, g3 = st.columns(3)
+
+    if not county_growth_table.empty:
+        top_growth_county = county_growth_table.iloc[0]["county"]
+        top_growth_value = county_growth_table.iloc[0]["growth_per_port"]
+        latest_snapshot = county_growth_table["latest_date"].iloc[0]
+
+        g1.metric("Grootste groeiknelpunt", top_growth_county)
+        g2.metric("EV-groei per poort", f"{top_growth_value:,.1f}")
+        g3.metric("Laatste meetmoment", latest_snapshot.strftime("%Y-%m-%d"))
+    else:
+        g1.metric("Grootste groeiknelpunt", "-")
+        g2.metric("EV-groei per poort", "-")
+        g3.metric("Laatste meetmoment", "-")
+
+    growth_col1, growth_col2 = st.columns(2)
+
+    with growth_col1:
+        if not county_growth_table.empty:
+            top_growth = county_growth_table.head(top_n).sort_values("growth_per_port", ascending=True)
+            fig_growth_gap = px.bar(
+                top_growth,
+                x="growth_per_port",
+                y="county",
+                orientation="h",
+                title="County's waar EV-groei sneller gaat dan laadcapaciteit",
+                labels={
+                    "growth_per_port": "EV-groei per poort",
+                    "county": "",
+                },
+                template="plotly_white",
+            )
+            fig_growth_gap.update_layout(height=420)
+            st.plotly_chart(fig_growth_gap, use_container_width=True)
+        else:
+            st.info("Geen historische groeidata beschikbaar.")
+
+    with growth_col2:
+        if not county_growth_table.empty:
+            scatter_growth = county_growth_table.dropna(subset=["ev_growth_abs", "port_count"]).copy()
+            fig_growth_scatter = px.scatter(
+                scatter_growth,
+                x="port_count",
+                y="ev_growth_abs",
+                size="latest_ev_total",
+                color="growth_per_port",
+                hover_name="county",
+                hover_data={
+                    "baseline_ev_total": True,
+                    "latest_ev_total": True,
+                    "ev_growth_abs": True,
+                    "ev_growth_pct": ":.1f",
+                    "station_count": True,
+                    "port_count": True,
+                    "growth_per_port": ":.2f",
+                },
+                title="EV-groei per county versus huidige laadcapaciteit",
+                labels={
+                    "port_count": port_label,
+                    "ev_growth_abs": "EV-groei afgelopen jaar",
+                    "growth_per_port": "Groei per poort",
+                },
+                template="plotly_white",
+            )
+            fig_growth_scatter.update_layout(height=420)
+            st.plotly_chart(fig_growth_scatter, use_container_width=True)
+        else:
+            st.info("Geen historische groeidata beschikbaar.")
+
+    if not county_growth_table.empty:
+        st.markdown("### Trend in tijd per county")
+        growth_line_df = history_filtered.copy()
+
+        if "vehicle_primary_use" in growth_line_df.columns:
+            growth_line_df = growth_line_df[
+                growth_line_df["vehicle_primary_use"].astype("string").str.lower().eq("passenger")
+            ].copy()
+
+        growth_line_df = growth_line_df.dropna(subset=["county", "date", "ev_total"]).copy()
+
+        if not growth_line_df.empty:
+            top_growth_counties = county_growth_table["county"].head(min(top_n, 8)).tolist()
+            growth_line_df = growth_line_df[growth_line_df["county"].isin(top_growth_counties)].copy()
+
+            line_df = (
+                growth_line_df.groupby(["date", "county"], dropna=False)
+                .agg(ev_total=("ev_total", "sum"))
+                .reset_index()
+            )
+
+            fig_growth_line = px.line(
+                line_df,
+                x="date",
+                y="ev_total",
+                color="county",
+                title="Ontwikkeling van EV-totaal in counties met grootste groeidruk",
+                labels={"date": "Datum", "ev_total": "EV-totaal", "county": "County"},
+                template="plotly_white",
+            )
+            fig_growth_line.update_layout(height=450)
+            st.plotly_chart(fig_growth_line, use_container_width=True)
+
+# =========================================================
+# TAB 3 - DATA
+# =========================================================
+with tab3:
     dataset_choice = st.radio(
         "Dataset",
-        ["County EV summary", "ZIP gap", "Charging stations", "EV records"],
+        ["County EV summary", "ZIP gap", "County growth", "Charging stations", "EV records", "History records"],
         horizontal=True,
     )
 
     if dataset_choice == "County EV summary":
         out_df = county_ev_table.copy()
-
     elif dataset_choice == "ZIP gap":
         out_df = zip_table.copy()
-
+    elif dataset_choice == "County growth":
+        out_df = county_growth_table.copy()
     elif dataset_choice == "Charging stations":
         cols = [
-            c
-            for c in [
+            c for c in [
                 "station_name",
                 "city",
                 "zip",
+                "county",
                 "access_code",
                 "restricted_access",
                 "ev_network",
@@ -841,15 +1098,27 @@ with tab2:
                 "total_port_count",
                 "port_count",
                 "open_date",
-            ]
-            if c in charging_filtered.columns
+            ] if c in charging_filtered.columns
         ]
         out_df = charging_filtered[cols].copy()
-
+    elif dataset_choice == "History records":
+        cols = [
+            c for c in [
+                "date",
+                "county",
+                "vehicle_primary_use",
+                "bevs",
+                "phevs",
+                "ev_total",
+                "non_ev_total",
+                "total_vehicles",
+                "percent_ev",
+            ] if c in history_filtered.columns
+        ]
+        out_df = history_filtered[cols].copy()
     else:
         cols = [
-            c
-            for c in [
+            c for c in [
                 "county",
                 "city",
                 "postal_code",
@@ -859,12 +1128,12 @@ with tab2:
                 "electric_vehicle_type",
                 "electric_range",
                 "base_msrp",
-            ]
-            if c in ev_filtered.columns
+            ] if c in ev_filtered.columns
         ]
         out_df = ev_filtered[cols].copy()
 
     st.dataframe(out_df.head(1500), use_container_width=True, height=550)
+
     st.download_button(
         "Download zichtbare tabel CSV",
         to_csv_download(out_df),
